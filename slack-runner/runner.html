@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Slack authz battery runner</title></head>
+<body>
+<h2>Slack authz battery (test workspaces only)</h2>
+<p>Token A <input id="tokA" type="password" size="60"></p>
+<p>Token B <input id="tokB" type="password" size="60"></p>
+<p><button id="run">Run battery</button></p>
+<pre id="results">not run yet</pre>
+<script>
+const TEAM_A="T0CKZ3EQHGW", CHAN_A="C0CKUR82M3M", CHAN_B="C0CKVQAE3M3", MARKER_A="SLACKSECRET-A-2301";
+const out=[];
+function log(s){ out.push(s); document.getElementById("results").textContent=out.join("\n"); }
+async function call(tok, method, params){
+  const body=new URLSearchParams(params||{});
+  try{
+    const r=await fetch("https://slack.com/api/"+method,{method:"POST",headers:{"Authorization":"Bearer "+tok,"Content-Type":"application/x-www-form-urlencoded"},body});
+    return await r.json();
+  }catch(e){ return {ok:false,error:"NETWORK:"+e.message}; }
+}
+function rec(label, b, expectFail){
+  const flag=(expectFail&&b.ok)?"  <<< UNEXPECTED SUCCESS":((!expectFail&&!b.ok)?"  <<< CONTROL FAILED":"");
+  log(label+": ok="+b.ok+" error="+(b.error||"")+flag);
+  return b;
+}
+document.getElementById("run").onclick=async()=>{
+  out.length=0; log("running...");
+  const tokA=document.getElementById("tokA").value.trim();
+  const tokB=document.getElementById("tokB").value.trim();
+  const a=await call(tokA,"auth.test",{}); rec("CTRL A auth.test",a,false);
+  const b=await call(tokB,"auth.test",{}); rec("CTRL B auth.test",b,false);
+  const USER_A=a.user_id, USER_B=b.user_id;
+  log("USER_A="+USER_A+" USER_B="+USER_B);
+  const histA=await call(tokA,"conversations.history",{channel:CHAN_A,limit:10});
+  rec("CTRL A history own private channel",histA,false);
+  let marker_ts=null;
+  (histA.messages||[]).forEach(m=>{ if((m.text||"").includes(MARKER_A)) marker_ts=m.ts; });
+  log("marker_ts_A="+marker_ts);
+  await rec("B conversations.info A-chan", await call(tokB,"conversations.info",{channel:CHAN_A}), true);
+  await rec("B conversations.history A-chan", await call(tokB,"conversations.history",{channel:CHAN_A}), true);
+  await rec("B conversations.members A-chan", await call(tokB,"conversations.members",{channel:CHAN_A}), true);
+  await rec("B conversations.join A-chan", await call(tokB,"conversations.join",{channel:CHAN_A}), true);
+  await rec("B chat.postMessage A-chan", await call(tokB,"chat.postMessage",{channel:CHAN_A,text:"INTRUSION-TEST-B"}), true);
+  if(marker_ts){
+    await rec("B chat.delete A marker msg", await call(tokB,"chat.delete",{channel:CHAN_A,ts:marker_ts}), true);
+    await rec("B chat.update A marker msg", await call(tokB,"chat.update",{channel:CHAN_A,ts:marker_ts,text:"PWNED"}), true);
+    await rec("B pins.list A-chan", await call(tokB,"pins.list",{channel:CHAN_A}), true);
+    await rec("B reactions.get A marker", await call(tokB,"reactions.get",{channel:CHAN_A,timestamp:marker_ts}), true);
+  }
+  await rec("B search.messages marker", await call(tokB,"search.messages",{query:MARKER_A}), true);
+  await rec("B users.info USER_A", await call(tokB,"users.info",{user:USER_A}), true);
+  await rec("B users.lookupByEmail A email", await call(tokB,"users.lookupByEmail",{email:"edhopalu+slack-a@gmail.com"}), true);
+  await rec("B team.info TEAM_A", await call(tokB,"team.info",{team:TEAM_A}), true);
+  const listB=await call(tokB,"conversations.list",{types:"private_channel",limit:200});
+  rec("B conversations.list private",listB,true);
+  log("B list contains A-chan: "+JSON.stringify((listB.channels||[]).some(c=>c.id===CHAN_A)));
+  await rec("B conversations.rename A-chan", await call(tokB,"conversations.rename",{channel:CHAN_A,name:"pwned-a"}), true);
+  await rec("B conversations.archive A-chan", await call(tokB,"conversations.archive",{channel:CHAN_A}), true);
+  await rec("B conversations.setPurpose A-chan", await call(tokB,"conversations.setPurpose",{channel:CHAN_A,purpose:"pwned"}), true);
+  await rec("B bookmarks.list A-chan", await call(tokB,"bookmarks.list",{channel_id:CHAN_A}), true);
+  await rec("B admin.teams.list", await call(tokB,"admin.teams.list",{}), true);
+  await rec("B conversations.invite USER_A into B-chan", await call(tokB,"conversations.invite",{channel:CHAN_B,users:USER_A}), true);
+  await rec("B conversations.inviteShared B-chan to A email", await call(tokB,"conversations.inviteShared",{channel:CHAN_B,emails:"edhopalu+slack-a@gmail.com",external_limited:"false"}), true);
+  const histA2=await call(tokA,"conversations.history",{channel:CHAN_A,limit:10});
+  const texts=(histA2.messages||[]).map(m=>m.text||"");
+  const intact=texts.some(t=>t.includes(MARKER_A)) && !texts.some(t=>t.includes("PWNED")||t.includes("INTRUSION"));
+  log("VERIFY A channel intact (marker present, no intrusion): "+intact+"; messages="+JSON.stringify(texts));
+  log("DONE");
+};
+</script>
+</body></html>
